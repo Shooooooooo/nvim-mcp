@@ -1,0 +1,9 @@
+{
+  "//": "Example MCP server registration. Claude Code auto-loads a project-level .mcp.json, or register globally with `claude mcp add`. When the agent runs inside a Neovim :terminal, $NVIM is inherited automatically and nvim-mcp connects back to that editor — no extra configuration needed.",
+  "mcpServers": {
+    "nvim": {
+      "command": "npx",
+      "args": ["-y", "nvim-mcp"]
+    }
+  }
+}

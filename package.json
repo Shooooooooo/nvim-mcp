@@ -1,0 +1,48 @@
+{
+  "name": "nvim-mcp",
+  "version": "0.1.0",
+  "description": "An MCP server that gives an agent (e.g. Claude Code) full control over the Neovim session it lives inside — buffers, windows, diagnostics, and terminals — turning Neovim into a Cursor-like agentic editor.",
+  "type": "module",
+  "bin": {
+    "nvim-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "nvim",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "neovim",
+    "nvim",
+    "claude",
+    "claude-code",
+    "agent",
+    "editor"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "neovim": "^5.4.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}
