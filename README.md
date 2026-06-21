@@ -95,11 +95,43 @@ That's it — the agent can now call the `nvim_*` tools and they act on the edit
 it's running inside. Ask it things like *"open a terminal and run the tests, then
 fix whatever fails."*
 
-### The `:ClaudeCode` command (optional)
+## Running commands inside the editor (the Cursor feel)
+
+By default Claude Code runs shell commands with its own built-in `Bash` tool, so
+you never see them in your editor. `nvim-mcp` routes that execution *through
+Neovim* so you watch it happen, with two independent knobs:
+
+**`mode`** — how strongly shell execution is routed through Neovim:
+
+| Mode | What happens |
+| --- | --- |
+| `off` | Do nothing; nvim-mcp is just available as tools. |
+| `steer` | A managed `CLAUDE.md` block asks the agent to prefer `nvim_run_in_terminal` over Bash. *(default)* |
+| `mirror` | The agent's Bash tool still runs, but each command and its output are echoed into a Neovim log buffer (via Claude Code hooks) so you watch its shell activity. |
+| `enforce` | The built-in Bash tool is **denied**, so *all* shell goes through `nvim_run_in_terminal` — the most Cursor-like. |
+
+**`display`** — where command execution is surfaced inside Neovim:
+
+| Display | What you see |
+| --- | --- |
+| `panel` | Each command runs in a terminal shown in a dedicated **"Agent Terminals"** tabpage. *(default)* |
+| `hidden` | Terminals run with no window; open them on demand via `nvim_list_terminals`. |
+| `log` | Output is streamed into one shared `nvim-mcp://log` buffer (no PTY). |
+
+In every mode and display, terminals are created **without stealing your focus or
+disturbing your window layout** (termopen runs inside `nvim_buf_call`), so the
+agent can run many commands in parallel while you keep editing. One-shot commands
+are cleaned up on success and **kept on failure** so you can inspect what broke.
+
+`mirror` and `enforce` use a small helper bin, `nvim-mcp-hook`, wired up via
+Claude Code hooks. Install it on `PATH` with `npm i -g nvim-mcp` (which provides
+both `nvim-mcp` and `nvim-mcp-hook`).
+
+### The `:ClaudeCode` command
 
 For a Cursor-like one-keystroke workflow, this repo ships a tiny Neovim plugin
-(in [`nvim/`](nvim/)) that opens the agent in a split for you. With
-[lazy.nvim](https://github.com/folke/lazy.nvim):
+(in [`nvim/`](nvim/)) that **generates the project configuration and opens the
+agent** for you. With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
@@ -109,14 +141,34 @@ For a Cursor-like one-keystroke workflow, this repo ships a tiny Neovim plugin
       agent_cmd = { "claude" },  -- the agent to launch
       split = "vertical",        -- "vertical" | "horizontal" | "tab" | "float"
       size = 0.4,
+      mode = "enforce",          -- "off" | "steer" | "mirror" | "enforce"
+      display = "panel",         -- "panel" | "hidden" | "log"
     })
     vim.keymap.set("n", "<leader>cc", "<cmd>ClaudeCode<cr>", { desc = "Claude Code" })
   end,
 }
 ```
 
-`:ClaudeCode` opens (or focuses) a terminal split running the agent. Because the
-terminal inherits `$NVIM`, `nvim-mcp` connects straight back to the same editor.
+`:ClaudeCode` first generates the matching project config — a `.mcp.json` (with
+`--display`), a `.claude/settings.local.json` (the permissions/hooks for the
+chosen `mode`), and a managed block in `CLAUDE.md` — then opens (or focuses) a
+terminal split running the agent. Because that terminal inherits `$NVIM`,
+`nvim-mcp` connects straight back to the same editor.
+
+Config generation is **idempotent** and only touches what it manages: it merges
+into existing files, marks its `CLAUDE.md` block with comment delimiters, and
+cleans up when you switch modes. It writes to `settings.local.json` (which is
+conventionally git-ignored) so nothing is committed without your say-so.
+
+Other commands:
+
+- `:ClaudeCodeMode <off|steer|mirror|enforce>` — switch mode and regenerate config.
+- `:ClaudeCodeSetup` — (re)generate the project config without opening the agent.
+- `:ClaudeCodeNew` — open a fresh agent terminal.
+
+See [`examples/`](examples/) for the generated `settings.enforce.json` and
+`settings.mirror.json`. You can of course skip the plugin and write these files
+(or `--display`) by hand.
 
 ## Tools
 
@@ -132,11 +184,11 @@ terminal inherits `$NVIM`, `nvim-mcp` connects straight back to the same editor.
 | `nvim_open_file` | Open a file (optionally in a split or tab). |
 | `nvim_list_windows` | List windows with buffer, size, cursor. |
 | `nvim_diagnostics` | LSP/diagnostic entries for a buffer or all buffers. |
-| `nvim_run_in_terminal` | **Open a terminal, run one command, wait, return output + exit code.** |
-| `nvim_open_terminal` | Open a persistent terminal; returns its buffer/channel/job id. |
+| `nvim_run_in_terminal` | **Run one command, wait, return output + exit code.** Takes a `display` override (`panel`/`hidden`/`log`). |
+| `nvim_open_terminal` | Open a persistent terminal (windowless; `display` controls where it shows); returns its buffer/channel/job id. |
 | `nvim_terminal_send` | Send input/keys to an open terminal. |
 | `nvim_terminal_read` | Read a terminal's rendered contents. |
-| `nvim_list_terminals` | List open terminal buffers and whether they're still running. |
+| `nvim_list_terminals` | List open terminal buffers, the command that started them, and whether they're still running. |
 
 ### LSP tools — the editor's language intelligence
 
@@ -184,6 +236,15 @@ What's covered:
 - **`test/terminal.test.ts`** — the headline scenario: open a terminal, run
   `echo hello world`, read it back; plus non-zero exit codes and interactive
   send/read.
+- **`test/concurrency.test.ts`** — many `runInTerminal` calls in parallel each
+  return their own output, with distinct exit codes, and **never move the user's
+  window or buffer** (the windowless-terminal guarantee).
+- **`test/display.test.ts`** — the three display surfaces: `panel` (a kept
+  terminal in the Agent Terminals tabpage), `hidden` (a terminal buffer shown in
+  no window), and `log` (output streamed into the shared log buffer).
+- **`test/hook.test.ts`** — the `nvim-mcp-hook` bin: `mirror-pre`/`mirror-post`
+  append the command and its output to the editor's log buffer, `deny-bash`
+  emits a deny decision, and the hook exits cleanly when no editor is reachable.
 - **`test/lsp.test.ts`** — the LSP tools driven against a deterministic fake
   language server (`test/helpers/fake-lsp.mjs`), covering hover, definition,
   references, document symbols, rename (apply + preview), code actions, and

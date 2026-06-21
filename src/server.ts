@@ -70,9 +70,13 @@ export function buildServer(nvim: NvimController): McpServer {
         "inside (detected via the NVIM environment variable). You can read and " +
         "edit buffers, inspect windows and diagnostics, and — unlike a plain " +
         "file editor integration — open terminals inside Neovim, send them " +
-        "input, and read their output. Use nvim_run_in_terminal for one-shot " +
-        "commands and nvim_open_terminal + nvim_terminal_send/read for " +
-        "interactive sessions.",
+        "input, and read their output.\n\n" +
+        "IMPORTANT: prefer nvim_run_in_terminal over your built-in shell/Bash " +
+        "tool for running commands. Running commands through Neovim means the " +
+        "user watches them execute inside their own editor (the way Cursor's " +
+        "agent does), and the command shares the editor's environment and " +
+        "working directory. Use nvim_run_in_terminal for one-shot commands and " +
+        "nvim_open_terminal + nvim_terminal_send/read for interactive sessions.",
     },
   );
 
@@ -268,15 +272,23 @@ export function buildServer(nvim: NvimController): McpServer {
         keepOpen: z
           .boolean()
           .optional()
-          .describe("Keep the terminal buffer open afterwards. Default false."),
-        split: z
-          .enum(["horizontal", "vertical", "tab", "none"])
+          .describe(
+            "Keep the terminal buffer even on success. Failed commands are kept " +
+              "automatically so the user can inspect them. Default false.",
+          ),
+        display: z
+          .enum(["panel", "hidden", "log"])
           .optional()
-          .describe("Where to show the terminal. Default 'horizontal'."),
+          .describe(
+            "Where to surface execution inside Neovim: 'panel' (a terminal in " +
+              "the Agent Terminals tabpage), 'hidden' (a terminal with no " +
+              "window), or 'log' (streamed into the shared log buffer). Defaults " +
+              "to the server's configured display mode.",
+          ),
       },
     },
-    guard(async ({ cmd, cwd, shell, timeoutMs, keepOpen, split }) => {
-      const res = await nvim.runInTerminal(cmd, { cwd, shell, timeoutMs, keepOpen, split });
+    guard(async ({ cmd, cwd, shell, timeoutMs, keepOpen, display }) => {
+      const res = await nvim.runInTerminal(cmd, { cwd, shell, timeoutMs, keepOpen, display });
       const header =
         `exit code: ${res.exitCode ?? "unknown"}` +
         (res.timedOut ? " (timed out)" : "") +
@@ -301,18 +313,19 @@ export function buildServer(nvim: NvimController): McpServer {
           .describe("Program to run. Default: the user's shell."),
         cwd: z.string().optional().describe("Working directory."),
         name: z.string().optional().describe("Optional display name for the terminal buffer."),
-        split: z
-          .enum(["horizontal", "vertical", "tab", "none"])
+        display: z
+          .enum(["panel", "hidden", "log"])
           .optional()
-          .describe("Where to show it. Default 'horizontal'."),
-        focus: z
-          .boolean()
-          .optional()
-          .describe("Move the cursor into the terminal window. Default false."),
+          .describe(
+            "Where to surface the terminal: 'panel' (shown in the Agent " +
+              "Terminals tabpage) or 'hidden' (no window; use the returned " +
+              "bufnr with nvim_terminal_send/read). Defaults to the server's " +
+              "configured display mode.",
+          ),
       },
     },
-    guard(async ({ cmd, cwd, name, split, focus }) =>
-      json(await nvim.openTerminal({ cmd, cwd, name, split, focus })),
+    guard(async ({ cmd, cwd, name, display }) =>
+      json(await nvim.openTerminal({ cmd, cwd, name, display })),
     ),
   );
 

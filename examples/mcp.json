@@ -1,9 +1,9 @@
 {
-  "//": "Example MCP server registration. Claude Code auto-loads a project-level .mcp.json, or register globally with `claude mcp add`. When the agent runs inside a Neovim :terminal, $NVIM is inherited automatically and nvim-mcp connects back to that editor — no extra configuration needed.",
+  "//": "Example MCP server registration. Claude Code auto-loads a project-level .mcp.json, or register globally with `claude mcp add`. When the agent runs inside a Neovim :terminal, $NVIM is inherited automatically and nvim-mcp connects back to that editor — no extra configuration needed. The --display flag chooses where the agent's command execution is surfaced: panel | hidden | log (it can also be set via the NVIM_MCP_EXEC_DISPLAY env var). The :ClaudeCode plugin generates this file for you.",
   "mcpServers": {
     "nvim": {
       "command": "npx",
-      "args": ["-y", "nvim-mcp"]
+      "args": ["-y", "nvim-mcp", "--display", "panel"]
     }
   }
 }

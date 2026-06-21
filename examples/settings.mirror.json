@@ -1,0 +1,17 @@
+{
+  "//": "Example .claude/settings.local.json for nvim-mcp 'mirror' mode. The agent's built-in Bash tool still runs, but each command and its output are echoed into a Neovim log buffer (nvim-mcp://log) so you watch the agent's shell activity inside your editor. Requires the nvim-mcp-hook bin on PATH (npm i -g nvim-mcp) or change the command to an npx form. The :ClaudeCode plugin generates this for you.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "nvim-mcp-hook mirror-pre" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "nvim-mcp-hook mirror-post" }]
+      }
+    ]
+  }
+}

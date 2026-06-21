@@ -1,0 +1,21 @@
+{
+  "//": "Example .claude/settings.local.json for nvim-mcp 'enforce' mode. Denies the built-in Bash tool so ALL shell goes through Neovim's nvim_run_in_terminal, the way Cursor's agent runs commands inside the editor. The deny-bash hook gives the agent a helpful message pointing it at the right tool. Requires the nvim-mcp-hook bin on PATH (npm i -g nvim-mcp) or change the command to an npx form. The :ClaudeCode plugin generates this for you.",
+  "permissions": {
+    "deny": ["Bash"],
+    "allow": [
+      "mcp__nvim__nvim_run_in_terminal",
+      "mcp__nvim__nvim_open_terminal",
+      "mcp__nvim__nvim_terminal_send",
+      "mcp__nvim__nvim_terminal_read",
+      "mcp__nvim__nvim_list_terminals"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "nvim-mcp-hook deny-bash" }]
+      }
+    ]
+  }
+}

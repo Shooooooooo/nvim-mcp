@@ -37,11 +37,21 @@ cleanup() {
 trap cleanup EXIT
 
 # Register nvim-mcp for this throwaway project so Claude Code can launch it.
+# --display panel surfaces the agent's command execution in a dedicated tabpage.
 cat >"$WORKDIR/.mcp.json" <<JSON
 {
   "mcpServers": {
-    "nvim": { "command": "node", "args": ["$ROOT/dist/index.js"] }
+    "nvim": { "command": "node", "args": ["$ROOT/dist/index.js", "--display", "panel"] }
   }
+}
+JSON
+
+# 'enforce' mode: deny the built-in Bash tool so all shell must go through the
+# editor. This mirrors what the :ClaudeCode plugin writes for mode = "enforce".
+mkdir -p "$WORKDIR/.claude"
+cat >"$WORKDIR/.claude/settings.local.json" <<JSON
+{
+  "permissions": { "deny": ["Bash"] }
 }
 JSON
 
@@ -67,10 +77,33 @@ echo "$OUTPUT"
 echo "-------------------"
 
 # 3) Verify the agent actually saw the terminal output from inside Neovim.
-if echo "$OUTPUT" | grep -qi "hello world"; then
-  echo "PASS: agent ran the command in an in-editor terminal and read 'hello world' back"
+if ! echo "$OUTPUT" | grep -qi "hello world"; then
+  echo "FAIL: 'hello world' not found in the agent's reply" >&2
+  exit 1
+fi
+echo "PASS: agent ran the command in an in-editor terminal and read 'hello world' back"
+
+# 4) Enforce-mode check: with Bash denied (settings.local.json above), a *generic*
+# request to run a command must still succeed by routing through Neovim — the
+# agent has no other way to run shell. We don't name the tool this time.
+echo
+echo "=== enforce mode: Bash denied, command must route through Neovim ==="
+PROMPT2='Run the shell command "echo enforced-marker-42" and tell me exactly what it printed.'
+OUTPUT2="$(
+  cd "$WORKDIR" && NVIM="$SOCKET" \
+    claude -p "$PROMPT2" \
+      --output-format text \
+      --allowedTools "mcp__nvim__nvim_run_in_terminal" "mcp__nvim__nvim_open_terminal" "mcp__nvim__nvim_terminal_read" \
+    2>/dev/null
+)"
+echo "--- agent reply ---"
+echo "$OUTPUT2"
+echo "-------------------"
+
+if echo "$OUTPUT2" | grep -qi "enforced-marker-42"; then
+  echo "PASS: with Bash denied, the agent ran the command through Neovim"
   exit 0
 fi
 
-echo "FAIL: 'hello world' not found in the agent's reply" >&2
+echo "FAIL: 'enforced-marker-42' not found in the agent's reply" >&2
 exit 1

@@ -16,6 +16,24 @@
 import * as net from "node:net";
 import { attach, NeovimClient } from "neovim";
 import { logger } from "./logger.js";
+import { RUNTIME_LUA } from "./runtime.js";
+
+/**
+ * Where the agent's command execution is surfaced inside Neovim:
+ *   - `panel`  — a PTY terminal shown in a dedicated "Agent Terminals" tabpage,
+ *   - `hidden` — a PTY terminal created with no window (surfaced on demand),
+ *   - `log`    — a windowless jobstart streamed into one shared log buffer.
+ * All three create terminals/jobs without stealing the user's focus.
+ */
+export type ExecDisplay = "panel" | "hidden" | "log";
+
+export const EXEC_DISPLAYS: readonly ExecDisplay[] = ["panel", "hidden", "log"];
+
+export function parseExecDisplay(value: string | undefined): ExecDisplay | undefined {
+  return value && (EXEC_DISPLAYS as readonly string[]).includes(value)
+    ? (value as ExecDisplay)
+    : undefined;
+}
 
 export interface NvimAddress {
   /** Raw address string (unix socket path or `host:port`). */
@@ -51,6 +69,8 @@ export interface TerminalInfo {
   channel: number;
   jobId: number;
   running: boolean;
+  /** The shell command the agent launched, if nvim-mcp started this terminal. */
+  cmd?: string;
 }
 
 export interface OpenTerminalResult {
@@ -235,9 +255,14 @@ export class NvimController {
   private client: NeovimClient | null = null;
   private connecting: Promise<NeovimClient> | null = null;
   private readonly addr: NvimAddress | null;
+  /** Default surface for command execution; per-call `display` overrides it. */
+  private readonly defaultDisplay: ExecDisplay;
+  /** Tracks which client has the `_G.__nvim_mcp` runtime installed. */
+  private runtimeClient: NeovimClient | null = null;
 
-  constructor(explicitAddress?: string) {
+  constructor(explicitAddress?: string, opts: { display?: ExecDisplay } = {}) {
     this.addr = resolveNvimAddress(explicitAddress);
+    this.defaultDisplay = opts.display ?? "panel";
   }
 
   /** The resolved target address, or null if none could be determined. */
@@ -327,6 +352,18 @@ export class NvimController {
   async execLua(code: string, args: unknown[] = []): Promise<unknown> {
     const nvim = await this.connect();
     return nvim.lua(code, args as never[]);
+  }
+
+  /**
+   * Install the `_G.__nvim_mcp` Lua runtime (panel/log/terminal helpers) once per
+   * connection. The runtime is idempotent, but we skip re-sending it when the
+   * current client already has it; a reconnect (new client) reinstalls.
+   */
+  private async ensureRuntime(): Promise<void> {
+    const nvim = await this.connect();
+    if (this.runtimeClient === nvim) return;
+    await nvim.lua(RUNTIME_LUA, []);
+    this.runtimeClient = nvim;
   }
 
   async execCommand(command: string): Promise<string> {
@@ -549,61 +586,53 @@ export class NvimController {
   // --- Terminals (the differentiating capability) -------------------------
 
   /**
-   * Open a terminal inside the user's Neovim. By default it appears in a
-   * horizontal split so the user can watch, but focus stays on the original
-   * window so the agent doesn't steal the user's place.
+   * Open a terminal inside the user's Neovim. The terminal is created
+   * *windowless* (via the runtime's `nvim_buf_call` + termopen), so it never
+   * splits a window or steals focus — multiple terminals can be opened in
+   * parallel safely. Where it becomes visible is governed by `display`:
+   *   - `panel`  → shown in the dedicated "Agent Terminals" tabpage,
+   *   - `hidden` / `log` → created with no window (surface it on demand).
+   * The legacy `split`/`focus` options are accepted for compatibility but no
+   * longer mutate the user's layout; use `display` instead.
    */
   async openTerminal(opts: {
     cmd?: string | string[];
     cwd?: string;
     name?: string;
+    display?: ExecDisplay;
+    /** Human-readable command recorded in the terminal registry. */
+    cmdStr?: string;
+    /** List the buffer (default true). One-shot runs pass false. */
+    listed?: boolean;
+    /** @deprecated superseded by `display`; ignored. */
     split?: "horizontal" | "vertical" | "tab" | "none";
+    /** @deprecated superseded by `display`; ignored. */
     focus?: boolean;
   } = {}): Promise<OpenTerminalResult> {
-    const split = opts.split ?? "horizontal";
-    const splitCmd =
-      split === "vertical"
-        ? "vnew"
-        : split === "tab"
-          ? "tabnew"
-          : split === "none"
-            ? "enew"
-            : "new";
+    await this.ensureRuntime();
     const shell = await this.defaultShell();
     const cmd = opts.cmd ?? shell;
+    const display = opts.display ?? this.defaultDisplay;
+    const show = display === "panel" ? "panel" : "none";
     return (await this.execLua(
       `
-      local args = ...
-      local prev_win = vim.api.nvim_get_current_win()
-      vim.cmd(args.split_cmd)
-      local win = vim.api.nvim_get_current_win()
-      local buf = vim.api.nvim_get_current_buf()
-      -- termopen's options must be a dictionary. An empty Lua table would be
-      -- encoded as a list and rejected, so start from vim.empty_dict().
-      local term_opts = vim.empty_dict()
-      if args.cwd ~= '' then term_opts.cwd = args.cwd end
-      local job = vim.fn.termopen(args.cmd, term_opts)
-      if args.name ~= '' then
-        pcall(vim.api.nvim_buf_set_name, buf, 'term://' .. args.name)
-      end
-      local channel = vim.bo[buf].channel
-      if not args.focus and vim.api.nvim_win_is_valid(prev_win) then
-        vim.api.nvim_set_current_win(prev_win)
-      end
-      return {
-        bufnr = buf,
-        channel = channel,
-        job_id = job,
-        name = vim.api.nvim_buf_get_name(buf),
-      }
+      local a = ...
+      return _G.__nvim_mcp.open_term(a.cmd, {
+        cwd = a.cwd,
+        name = a.name,
+        cmd_str = a.cmd_str,
+        show = a.show,
+        listed = a.listed,
+      })
     `,
       [
         {
-          split_cmd: splitCmd,
           cmd,
           cwd: opts.cwd ?? "",
           name: opts.name ?? "",
-          focus: opts.focus ?? false,
+          cmd_str: opts.cmdStr ?? (typeof cmd === "string" ? cmd : cmd.join(" ")),
+          show,
+          listed: opts.listed ?? true,
         },
       ],
     ).then((r) => {
@@ -614,6 +643,7 @@ export class NvimController {
 
   async listTerminals(): Promise<TerminalInfo[]> {
     return (await this.execLua(`
+      local reg = (_G.__nvim_mcp and _G.__nvim_mcp.terminals) or {}
       local out = {}
       for _, b in ipairs(vim.api.nvim_list_bufs()) do
         if vim.bo[b].buftype == 'terminal' then
@@ -628,20 +658,29 @@ export class NvimController {
             channel = chan,
             job_id = job,
             running = running,
+            cmd = reg[b] and reg[b].cmd or nil,
           }
         end
       end
       return out
     `).then((r) =>
-      (r as Array<{ bufnr: number; name: string; channel: number; job_id: number; running: boolean }>).map(
-        (t) => ({
-          bufnr: t.bufnr,
-          name: t.name,
-          channel: t.channel,
-          jobId: t.job_id,
-          running: t.running,
-        }),
-      ),
+      (
+        r as Array<{
+          bufnr: number;
+          name: string;
+          channel: number;
+          job_id: number;
+          running: boolean;
+          cmd?: string;
+        }>
+      ).map((t) => ({
+        bufnr: t.bufnr,
+        name: t.name,
+        channel: t.channel,
+        jobId: t.job_id,
+        running: t.running,
+        ...(t.cmd ? { cmd: t.cmd } : {}),
+      })),
     ));
   }
 
@@ -688,11 +727,16 @@ export class NvimController {
   }
 
   /**
-   * Convenience: open a terminal, run a single command, wait for it to finish,
-   * and return its output. This is the building block behind "run echo hello
-   * world and read it back". Completion is detected from the
-   * `[Process exited N]` line Neovim appends when the job ends; if that never
-   * appears within `timeoutMs` we return what we have with `timedOut: true`.
+   * Convenience: run a single command inside Neovim, wait for it to finish, and
+   * return its output. This is the building block behind "run echo hello world
+   * and read it back". The `display` mode picks the execution surface:
+   *   - `panel`/`hidden` → a PTY terminal (completion detected from the
+   *     `[Process exited N]` marker Neovim appends);
+   *   - `log` → a windowless jobstart streamed into the shared log buffer.
+   * If completion isn't seen within `timeoutMs` we return what we have with
+   * `timedOut: true`. On the PTY path the terminal buffer is cleaned up on
+   * success but kept on failure (or when `keepOpen` is set) so the user can
+   * inspect what went wrong.
    */
   async runInTerminal(
     cmd: string,
@@ -701,16 +745,24 @@ export class NvimController {
       shell?: string;
       timeoutMs?: number;
       keepOpen?: boolean;
+      display?: ExecDisplay;
+      /** @deprecated superseded by `display`; ignored. */
       split?: "horizontal" | "vertical" | "tab" | "none";
     } = {},
   ): Promise<RunInTerminalResult> {
+    const display = opts.display ?? this.defaultDisplay;
+    if (display === "log") {
+      return this.runViaJob(cmd, opts);
+    }
+
     const timeoutMs = opts.timeoutMs ?? 15_000;
     const shell = opts.shell ?? (await this.defaultShell());
     const opened = await this.openTerminal({
       cmd: [shell, "-c", cmd],
       cwd: opts.cwd,
-      split: opts.split ?? "horizontal",
-      focus: false,
+      display,
+      cmdStr: cmd,
+      listed: false,
     });
 
     const deadline = Date.now() + timeoutMs;
@@ -749,9 +801,12 @@ export class NvimController {
       cleaned.pop();
     }
 
-    if (!opts.keepOpen) {
+    // Tidy up on success; keep the buffer on failure/timeout so the user can
+    // inspect it (in the panel, or via nvim_list_terminals when hidden).
+    const succeeded = exitCode === 0 && !timedOut;
+    if (!opts.keepOpen && succeeded) {
       await this.execLua(
-        `local b = ...; pcall(vim.api.nvim_buf_delete, b, { force = true })`,
+        `local b = ...; if _G.__nvim_mcp then _G.__nvim_mcp.forget_term(b) else pcall(vim.api.nvim_buf_delete, b, { force = true }) end`,
         [opened.bufnr],
       );
     }
@@ -762,6 +817,65 @@ export class NvimController {
       exitCode,
       timedOut,
     };
+  }
+
+  /**
+   * `log`-mode execution: run the command with jobstart (no PTY) via the runtime
+   * and stream its output into the shared log buffer, polling the job registry
+   * for completion. Returns the log buffer as `bufnr`.
+   */
+  private async runViaJob(
+    cmd: string,
+    opts: { cwd?: string; shell?: string; timeoutMs?: number } = {},
+  ): Promise<RunInTerminalResult> {
+    await this.ensureRuntime();
+    const timeoutMs = opts.timeoutMs ?? 15_000;
+    const shell = opts.shell ?? (await this.defaultShell());
+    const id = (await this.execLua(
+      `
+      local a = ...
+      return _G.__nvim_mcp.run_job({ a.shell, '-c', a.cmd }, { cwd = a.cwd, cmd_str = a.cmd })
+    `,
+      [{ shell, cmd, cwd: opts.cwd ?? "" }],
+    )) as number;
+
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const st = (await this.execLua(`return _G.__nvim_mcp.job_status(...)`, [id])) as {
+        found: boolean;
+        done: boolean;
+        exit_code: number | null;
+        output: string;
+        log_buf: number | null;
+      };
+      if (st.done) {
+        return {
+          bufnr: st.log_buf ?? -1,
+          output: st.output,
+          exitCode: st.exit_code,
+          timedOut: false,
+        };
+      }
+      if (Date.now() > deadline) {
+        return {
+          bufnr: st.log_buf ?? -1,
+          output: st.output,
+          exitCode: null,
+          timedOut: true,
+        };
+      }
+      await sleep(75);
+    }
+  }
+
+  /**
+   * Append lines to the shared "nvim-mcp://log" buffer. This is what the mirror
+   * hook uses to surface Bash commands run by the agent's built-in tool inside
+   * the editor. Returns the log buffer number.
+   */
+  async appendLog(lines: string[]): Promise<number> {
+    await this.ensureRuntime();
+    return (await this.execLua(`return _G.__nvim_mcp.append_log(...)`, [lines])) as number;
   }
 
   // --- LSP (the editor's own language intelligence) -----------------------
