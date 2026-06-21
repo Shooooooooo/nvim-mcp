@@ -3,7 +3,8 @@
 **Make Neovim feel like Cursor.** `nvim-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
 server that gives an agent — such as [Claude Code](https://claude.com/claude-code) —
 **full control over the Neovim session it is running inside**: buffers, windows,
-diagnostics, and, crucially, **terminals**.
+diagnostics, **LSP language intelligence** (definition, references, hover,
+rename, code actions), and, crucially, **terminals**.
 
 When you launch an agent from inside a Neovim `:terminal`, the agent isn't just
 editing files in a vacuum — it's living inside your editor. `nvim-mcp` lets it
@@ -137,6 +138,23 @@ terminal inherits `$NVIM`, `nvim-mcp` connects straight back to the same editor.
 | `nvim_terminal_read` | Read a terminal's rendered contents. |
 | `nvim_list_terminals` | List open terminal buffers and whether they're still running. |
 
+### LSP tools — the editor's language intelligence
+
+These let the agent use the language servers Neovim already has running, instead
+of re-deriving semantics from raw text. Positions are **1-based line and 1-based
+column**.
+
+| Tool | What it does |
+| --- | --- |
+| `nvim_lsp_clients` | List the language servers attached to a buffer (and whether they've initialized). |
+| `nvim_lsp_hover` | Hover docs (signatures, types) for the symbol at a position. |
+| `nvim_lsp_definition` | Resolve definition location(s) of the symbol at a position. |
+| `nvim_lsp_references` | Find all references to the symbol at a position. |
+| `nvim_lsp_document_symbols` | List the symbols defined in a buffer (with kind and nesting depth). |
+| `nvim_lsp_rename` | Rename a symbol project-wide; applies the edits (or previews with `apply=false`). |
+| `nvim_lsp_code_action` | List code actions (quick fixes/refactors) at a position; apply one by index. |
+| `nvim_lsp_format` | Format a buffer via its language server and apply the changes. |
+
 ### Targeting a specific Neovim
 
 By default the target is discovered from the environment, highest priority first:
@@ -166,6 +184,10 @@ What's covered:
 - **`test/terminal.test.ts`** — the headline scenario: open a terminal, run
   `echo hello world`, read it back; plus non-zero exit codes and interactive
   send/read.
+- **`test/lsp.test.ts`** — the LSP tools driven against a deterministic fake
+  language server (`test/helpers/fake-lsp.mjs`), covering hover, definition,
+  references, document symbols, rename (apply + preview), code actions, and
+  formatting — all offline, no real language server or network required.
 - **`test/mcp.test.ts`** — the full MCP stack: an MCP client launches the server
   as a subprocess with `NVIM` set, lists the tools, and calls
   `nvim_run_in_terminal` to run `echo hello world` end-to-end over JSON-RPC.

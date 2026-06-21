@@ -55,6 +55,20 @@ describe("MCP server", () => {
     expect(names).toContain("nvim_open_terminal");
     expect(names).toContain("nvim_terminal_read");
     expect(names).toContain("nvim_read_buffer");
+    expect(names).toContain("nvim_lsp_definition");
+    expect(names).toContain("nvim_lsp_hover");
+    expect(names).toContain("nvim_lsp_code_action");
+  });
+
+  it("exposes LSP tools over the protocol (no client attached -> empty)", async () => {
+    const res = (await client.callTool({
+      name: "nvim_lsp_clients",
+      arguments: {},
+    })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+    expect(res.isError).toBeFalsy();
+    // No language server is attached in this buffer, so the list is empty —
+    // but the tool resolves cleanly through the full MCP stack.
+    expect(JSON.parse(res.content[0].text)).toEqual([]);
   });
 
   it("reports the connected Neovim via nvim_info", async () => {

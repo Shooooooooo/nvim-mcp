@@ -364,5 +364,145 @@ export function buildServer(nvim: NvimController): McpServer {
     }),
   );
 
+  // --- LSP (the editor's language intelligence) ---------------------------
+  //
+  // Positions are 1-based line and 1-based column, the way a human reads them.
+
+  const lspPos = {
+    line: z.number().int().optional().describe("1-based line number. Default 1."),
+    col: z.number().int().optional().describe("1-based column number. Default 1."),
+  };
+
+  server.registerTool(
+    "nvim_lsp_clients",
+    {
+      title: "List LSP clients",
+      description:
+        "List the language servers attached to a buffer (or the current " +
+        "buffer), with their id, name, root directory and whether they have " +
+        "finished initializing. Use this to check language intelligence is " +
+        "available before calling the other nvim_lsp_* tools.",
+      inputSchema: {
+        bufnr: z.number().int().optional().describe("Buffer number. Omit for the current buffer."),
+      },
+    },
+    guard(async ({ bufnr }) => json(await nvim.lspClients(bufnr))),
+  );
+
+  server.registerTool(
+    "nvim_lsp_hover",
+    {
+      title: "LSP hover",
+      description:
+        "Get hover documentation (signatures, types, docs) for the symbol at a " +
+        "position, as the editor's language server would show it.",
+      inputSchema: { ...bufTarget, ...lspPos },
+    },
+    guard(async ({ bufnr, line, col }) => {
+      const res = await nvim.lspHover({ bufnr, line, col });
+      return text(res.contents || "(no hover information)");
+    }),
+  );
+
+  server.registerTool(
+    "nvim_lsp_definition",
+    {
+      title: "LSP go to definition",
+      description:
+        "Resolve the definition location(s) of the symbol at a position. Returns " +
+        "file, line and column (1-based) for each location.",
+      inputSchema: { ...bufTarget, ...lspPos },
+    },
+    guard(async ({ bufnr, line, col }) => json(await nvim.lspDefinition({ bufnr, line, col }))),
+  );
+
+  server.registerTool(
+    "nvim_lsp_references",
+    {
+      title: "LSP find references",
+      description: "Find all references to the symbol at a position across the project.",
+      inputSchema: {
+        ...bufTarget,
+        ...lspPos,
+        includeDeclaration: z
+          .boolean()
+          .optional()
+          .describe("Include the declaration itself. Default true."),
+      },
+    },
+    guard(async ({ bufnr, line, col, includeDeclaration }) =>
+      json(await nvim.lspReferences({ bufnr, line, col, includeDeclaration })),
+    ),
+  );
+
+  server.registerTool(
+    "nvim_lsp_document_symbols",
+    {
+      title: "LSP document symbols",
+      description:
+        "List the symbols (functions, classes, variables, …) defined in a " +
+        "buffer, with their kind and line. Nesting is reported via `depth`.",
+      inputSchema: {
+        bufnr: z.number().int().optional().describe("Buffer number. Omit for the current buffer."),
+      },
+    },
+    guard(async ({ bufnr }) => json(await nvim.lspDocumentSymbols(bufnr))),
+  );
+
+  server.registerTool(
+    "nvim_lsp_rename",
+    {
+      title: "LSP rename symbol",
+      description:
+        "Rename the symbol at a position project-wide via the language server " +
+        "and apply the resulting edits (set apply=false to preview which files " +
+        "would change without modifying anything).",
+      inputSchema: {
+        newName: z.string().describe("The new name for the symbol."),
+        ...bufTarget,
+        ...lspPos,
+        apply: z.boolean().optional().describe("Apply the edits. Default true."),
+      },
+    },
+    guard(async ({ newName, bufnr, line, col, apply }) =>
+      json(await nvim.lspRename({ newName, bufnr, line, col, apply })),
+    ),
+  );
+
+  server.registerTool(
+    "nvim_lsp_code_action",
+    {
+      title: "LSP code actions",
+      description:
+        "List the code actions (quick fixes, refactors) the language server " +
+        "offers at a position, including any diagnostics there. Pass applyIndex " +
+        "(1-based, from a previous listing) to apply one of them.",
+      inputSchema: {
+        ...bufTarget,
+        ...lspPos,
+        applyIndex: z
+          .number()
+          .int()
+          .optional()
+          .describe("1-based index of the action to apply. Omit to only list."),
+      },
+    },
+    guard(async ({ bufnr, line, col, applyIndex }) =>
+      json(await nvim.lspCodeAction({ bufnr, line, col, applyIndex })),
+    ),
+  );
+
+  server.registerTool(
+    "nvim_lsp_format",
+    {
+      title: "LSP format buffer",
+      description: "Format a buffer using its language server and apply the changes in place.",
+      inputSchema: {
+        bufnr: z.number().int().optional().describe("Buffer number. Omit for the current buffer."),
+      },
+    },
+    guard(async ({ bufnr }) => json(await nvim.lspFormat(bufnr))),
+  );
+
   return server;
 }

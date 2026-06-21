@@ -91,11 +91,95 @@ export interface NvimInfo {
   listedBuffers: number;
 }
 
+export interface LspClientInfo {
+  id: number;
+  name: string;
+  rootDir?: string;
+  initialized: boolean;
+  offsetEncoding?: string;
+}
+
+export interface LspLocation {
+  uri: string;
+  filename: string;
+  line: number;
+  col: number;
+  endLine: number;
+  endCol: number;
+}
+
+export interface LspSymbol {
+  name: string;
+  kind: string;
+  detail?: string;
+  line?: number;
+  depth: number;
+}
+
+export interface LspHoverResult {
+  contents: string;
+}
+
+export interface LspRenameResult {
+  applied: boolean;
+  changedFiles: Array<{ file: string; edits: number }>;
+  editCount: number;
+}
+
+export interface LspCodeActionItem {
+  index: number;
+  title: string;
+  kind?: string;
+  hasEdit: boolean;
+  hasCommand: boolean;
+}
+
+export interface LspCodeActionResult {
+  actions: LspCodeActionItem[];
+  applied: boolean;
+  appliedTitle?: string;
+}
+
+export interface LspFormatResult {
+  applied: boolean;
+  editCount: number;
+}
+
 const SEVERITY_NAMES: Record<number, string> = {
   1: "ERROR",
   2: "WARN",
   3: "INFO",
   4: "HINT",
+};
+
+/** LSP SymbolKind numbers -> human names (see the LSP spec). */
+const SYMBOL_KIND_NAMES: Record<number, string> = {
+  1: "File",
+  2: "Module",
+  3: "Namespace",
+  4: "Package",
+  5: "Class",
+  6: "Method",
+  7: "Property",
+  8: "Field",
+  9: "Constructor",
+  10: "Enum",
+  11: "Interface",
+  12: "Function",
+  13: "Variable",
+  14: "Constant",
+  15: "String",
+  16: "Number",
+  17: "Boolean",
+  18: "Array",
+  19: "Object",
+  20: "Key",
+  21: "Null",
+  22: "EnumMember",
+  23: "Struct",
+  24: "Event",
+  25: "Operator",
+  26: "TypeParameter",
 };
 
 /**
@@ -678,6 +762,390 @@ export class NvimController {
       exitCode,
       timedOut,
     };
+  }
+
+  // --- LSP (the editor's own language intelligence) -----------------------
+  //
+  // These wrap vim.lsp.buf_request_sync so the agent can use the language
+  // servers the editor already has running — go-to-definition, references,
+  // hover, rename, code actions, formatting — instead of re-deriving semantics
+  // from raw text. Positions are 1-based line and 1-based column (as a human
+  // counts them); they are converted to LSP's 0-based coordinates internally.
+
+  /** Convert a 1-based line / 1-based column to an LSP 0-based position. */
+  private lspPosition(line?: number, col?: number): { line: number; character: number } {
+    return {
+      line: Math.max(0, (line ?? 1) - 1),
+      character: Math.max(0, (col ?? 1) - 1),
+    };
+  }
+
+  /** List the LSP clients attached to a buffer (or the current buffer). */
+  async lspClients(bufnr?: number): Promise<LspClientInfo[]> {
+    return (await this.execLua(
+      `
+      local args = ...
+      local bufnr = (args.bufnr and args.bufnr >= 0) and args.bufnr or vim.api.nvim_get_current_buf()
+      local get = vim.lsp.get_clients or vim.lsp.get_active_clients
+      local out = {}
+      for _, c in ipairs(get({ bufnr = bufnr })) do
+        out[#out + 1] = {
+          id = c.id,
+          name = c.name,
+          root_dir = (c.config and c.config.root_dir) or c.root_dir,
+          initialized = c.server_capabilities ~= nil,
+          offset_encoding = c.offset_encoding,
+        }
+      end
+      return out
+    `,
+      [{ bufnr: bufnr ?? -1 }],
+    ).then((r) =>
+      (r as Array<{ id: number; name: string; root_dir?: string; initialized: boolean; offset_encoding?: string }>).map(
+        (c) => ({
+          id: c.id,
+          name: c.name,
+          rootDir: c.root_dir,
+          initialized: c.initialized,
+          offsetEncoding: c.offset_encoding,
+        }),
+      ),
+    ));
+  }
+
+  async lspHover(opts: { bufnr?: number; line?: number; col?: number } = {}): Promise<LspHoverResult> {
+    const pos = this.lspPosition(opts.line, opts.col);
+    return (await this.execLua(
+      `
+      local args = ...
+      local bufnr = (args.bufnr and args.bufnr >= 0) and args.bufnr or vim.api.nvim_get_current_buf()
+      local params = {
+        textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+        position = { line = args.line, character = args.character },
+      }
+      local responses = vim.lsp.buf_request_sync(bufnr, 'textDocument/hover', params, args.timeout)
+      local result
+      for _, r in pairs(responses or {}) do
+        if r.error then error(vim.inspect(r.error)) end
+        if r.result then result = r.result; break end
+      end
+      if not result or not result.contents then return { contents = '' } end
+      local lines = vim.lsp.util.convert_input_to_markdown_lines(result.contents)
+      while #lines > 0 and lines[#lines] == '' do table.remove(lines) end
+      return { contents = table.concat(lines, '\\n') }
+    `,
+      [{ bufnr: opts.bufnr ?? -1, line: pos.line, character: pos.character, timeout: 2000 }],
+    )) as LspHoverResult;
+  }
+
+  async lspDefinition(opts: { bufnr?: number; line?: number; col?: number } = {}): Promise<LspLocation[]> {
+    return this.lspLocations("textDocument/definition", opts);
+  }
+
+  async lspReferences(
+    opts: { bufnr?: number; line?: number; col?: number; includeDeclaration?: boolean } = {},
+  ): Promise<LspLocation[]> {
+    return this.lspLocations("textDocument/references", opts, {
+      context: { includeDeclaration: opts.includeDeclaration ?? true },
+    });
+  }
+
+  /** Shared implementation for the location-returning requests. */
+  private async lspLocations(
+    method: string,
+    opts: { bufnr?: number; line?: number; col?: number },
+    extraParams: Record<string, unknown> = {},
+  ): Promise<LspLocation[]> {
+    const pos = this.lspPosition(opts.line, opts.col);
+    return (await this.execLua(
+      `
+      local args = ...
+      local bufnr = (args.bufnr and args.bufnr >= 0) and args.bufnr or vim.api.nvim_get_current_buf()
+      local params = vim.tbl_extend('force', {
+        textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+        position = { line = args.line, character = args.character },
+      }, args.extra or {})
+
+      local function to_item(loc)
+        local uri = loc.uri or loc.targetUri
+        local range = loc.range or loc.targetSelectionRange or loc.targetRange
+        return {
+          uri = uri,
+          filename = vim.uri_to_fname(uri),
+          line = range.start.line + 1,
+          col = range.start.character + 1,
+          end_line = range['end'].line + 1,
+          end_col = range['end'].character + 1,
+        }
+      end
+
+      local out = {}
+      local responses = vim.lsp.buf_request_sync(bufnr, args.method, params, args.timeout)
+      for _, r in pairs(responses or {}) do
+        if r.error then error(vim.inspect(r.error)) end
+        local res = r.result
+        if res then
+          if res.uri or res.targetUri then
+            out[#out + 1] = to_item(res)
+          else
+            for _, loc in ipairs(res) do out[#out + 1] = to_item(loc) end
+          end
+        end
+      end
+      return out
+    `,
+      [
+        {
+          bufnr: opts.bufnr ?? -1,
+          line: pos.line,
+          character: pos.character,
+          method,
+          extra: extraParams,
+          timeout: 2000,
+        },
+      ],
+    ).then((r) =>
+      (r as Array<{ uri: string; filename: string; line: number; col: number; end_line: number; end_col: number }>).map(
+        (l) => ({
+          uri: l.uri,
+          filename: l.filename,
+          line: l.line,
+          col: l.col,
+          endLine: l.end_line,
+          endCol: l.end_col,
+        }),
+      ),
+    ));
+  }
+
+  async lspDocumentSymbols(bufnr?: number): Promise<LspSymbol[]> {
+    const raw = (await this.execLua(
+      `
+      local args = ...
+      local bufnr = (args.bufnr and args.bufnr >= 0) and args.bufnr or vim.api.nvim_get_current_buf()
+      local params = { textDocument = { uri = vim.uri_from_bufnr(bufnr) } }
+      local responses = vim.lsp.buf_request_sync(bufnr, 'textDocument/documentSymbol', params, args.timeout)
+
+      local out = {}
+      local function flatten(syms, depth)
+        for _, s in ipairs(syms) do
+          local range = s.range or (s.location and s.location.range)
+          out[#out + 1] = {
+            name = s.name,
+            kind = s.kind,
+            detail = s.detail,
+            line = range and (range.start.line + 1) or nil,
+            depth = depth,
+          }
+          if s.children then flatten(s.children, depth + 1) end
+        end
+      end
+      for _, r in pairs(responses or {}) do
+        if r.error then error(vim.inspect(r.error)) end
+        if r.result then flatten(r.result, 0) end
+      end
+      return out
+    `,
+      [{ bufnr: bufnr ?? -1, timeout: 2000 }],
+    )) as Array<{ name: string; kind: number; detail?: string; line?: number; depth: number }>;
+    return raw.map((s) => ({
+      name: s.name,
+      kind: SYMBOL_KIND_NAMES[s.kind] ?? String(s.kind),
+      detail: s.detail,
+      line: s.line,
+      depth: s.depth,
+    }));
+  }
+
+  async lspRename(opts: {
+    newName: string;
+    bufnr?: number;
+    line?: number;
+    col?: number;
+    apply?: boolean;
+  }): Promise<LspRenameResult> {
+    const pos = this.lspPosition(opts.line, opts.col);
+    return (await this.execLua(
+      `
+      local args = ...
+      local bufnr = (args.bufnr and args.bufnr >= 0) and args.bufnr or vim.api.nvim_get_current_buf()
+      local params = {
+        textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+        position = { line = args.line, character = args.character },
+        newName = args.new_name,
+      }
+      local responses = vim.lsp.buf_request_sync(bufnr, 'textDocument/rename', params, args.timeout)
+      local edit
+      for _, r in pairs(responses or {}) do
+        if r.error then error(vim.inspect(r.error)) end
+        if r.result then edit = r.result; break end
+      end
+      if not edit then return { applied = false, changed_files = {}, edit_count = 0 } end
+
+      local files, count = {}, 0
+      if edit.changes then
+        for uri, edits in pairs(edit.changes) do
+          files[#files + 1] = { file = vim.uri_to_fname(uri), edits = #edits }
+          count = count + #edits
+        end
+      end
+      if edit.documentChanges then
+        for _, dc in ipairs(edit.documentChanges) do
+          if dc.textDocument then
+            local n = dc.edits and #dc.edits or 0
+            files[#files + 1] = { file = vim.uri_to_fname(dc.textDocument.uri), edits = n }
+            count = count + n
+          end
+        end
+      end
+
+      local applied = false
+      if args.apply then
+        local enc = 'utf-16'
+        local get = vim.lsp.get_clients or vim.lsp.get_active_clients
+        local cs = get({ bufnr = bufnr })
+        if cs[1] then enc = cs[1].offset_encoding or enc end
+        vim.lsp.util.apply_workspace_edit(edit, enc)
+        applied = true
+      end
+      return { applied = applied, changed_files = files, edit_count = count }
+    `,
+      [
+        {
+          bufnr: opts.bufnr ?? -1,
+          line: pos.line,
+          character: pos.character,
+          new_name: opts.newName,
+          apply: opts.apply ?? true,
+          timeout: 2000,
+        },
+      ],
+    ).then((r) => {
+      const res = r as { applied: boolean; changed_files: Array<{ file: string; edits: number }>; edit_count: number };
+      return { applied: res.applied, changedFiles: res.changed_files, editCount: res.edit_count };
+    }));
+  }
+
+  async lspCodeAction(opts: {
+    bufnr?: number;
+    line?: number;
+    col?: number;
+    applyIndex?: number;
+  } = {}): Promise<LspCodeActionResult> {
+    const pos = this.lspPosition(opts.line, opts.col);
+    return (await this.execLua(
+      `
+      local args = ...
+      local bufnr = (args.bufnr and args.bufnr >= 0) and args.bufnr or vim.api.nvim_get_current_buf()
+      local pos = { line = args.line, character = args.character }
+      local diags = vim.diagnostic.get(bufnr, { lnum = args.line })
+      local lsp_diags = {}
+      for _, d in ipairs(diags) do
+        if d.user_data and d.user_data.lsp then lsp_diags[#lsp_diags + 1] = d.user_data.lsp end
+      end
+      local params = {
+        textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+        range = { start = pos, ['end'] = pos },
+        context = { diagnostics = lsp_diags },
+      }
+      local responses = vim.lsp.buf_request_sync(bufnr, 'textDocument/codeAction', params, args.timeout)
+
+      local actions = {}
+      for _, r in pairs(responses or {}) do
+        if r.error then error(vim.inspect(r.error)) end
+        for _, a in ipairs(r.result or {}) do actions[#actions + 1] = a end
+      end
+
+      local listed, applied, applied_title = {}, false, nil
+      for i, a in ipairs(actions) do
+        listed[#listed + 1] = {
+          index = i,
+          title = a.title,
+          kind = a.kind,
+          has_edit = a.edit ~= nil,
+          has_command = a.command ~= nil,
+        }
+      end
+
+      if args.apply_index and actions[args.apply_index] then
+        local a = actions[args.apply_index]
+        local enc = 'utf-16'
+        local get = vim.lsp.get_clients or vim.lsp.get_active_clients
+        local cs = get({ bufnr = bufnr })
+        if cs[1] then enc = cs[1].offset_encoding or enc end
+        if a.edit then vim.lsp.util.apply_workspace_edit(a.edit, enc) end
+        if a.command then
+          local cmd = a.command
+          if type(cmd) == 'table' and cmd.command then
+            vim.lsp.buf_request_sync(bufnr, 'workspace/executeCommand',
+              { command = cmd.command, arguments = cmd.arguments }, args.timeout)
+          end
+        end
+        applied = true
+        applied_title = a.title
+      end
+
+      return { actions = listed, applied = applied, applied_title = applied_title }
+    `,
+      [
+        {
+          bufnr: opts.bufnr ?? -1,
+          line: pos.line,
+          character: pos.character,
+          apply_index: opts.applyIndex ?? 0,
+          timeout: 2000,
+        },
+      ],
+    ).then((r) => {
+      const res = r as {
+        actions: Array<{ index: number; title: string; kind?: string; has_edit: boolean; has_command: boolean }>;
+        applied: boolean;
+        applied_title?: string;
+      };
+      return {
+        actions: res.actions.map((a) => ({
+          index: a.index,
+          title: a.title,
+          kind: a.kind,
+          hasEdit: a.has_edit,
+          hasCommand: a.has_command,
+        })),
+        applied: res.applied,
+        appliedTitle: res.applied_title,
+      };
+    }));
+  }
+
+  async lspFormat(bufnr?: number): Promise<LspFormatResult> {
+    return (await this.execLua(
+      `
+      local args = ...
+      local bufnr = (args.bufnr and args.bufnr >= 0) and args.bufnr or vim.api.nvim_get_current_buf()
+      local params = {
+        textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+        options = {
+          tabSize = (vim.bo[bufnr].shiftwidth > 0) and vim.bo[bufnr].shiftwidth or 4,
+          insertSpaces = vim.bo[bufnr].expandtab,
+        },
+      }
+      local responses = vim.lsp.buf_request_sync(bufnr, 'textDocument/formatting', params, args.timeout)
+      local edits, enc = nil, 'utf-16'
+      local get = vim.lsp.get_clients or vim.lsp.get_active_clients
+      local cs = get({ bufnr = bufnr })
+      if cs[1] then enc = cs[1].offset_encoding or enc end
+      for _, r in pairs(responses or {}) do
+        if r.error then error(vim.inspect(r.error)) end
+        if r.result then edits = r.result; break end
+      end
+      edits = edits or {}
+      vim.lsp.util.apply_text_edits(edits, bufnr, enc)
+      return { applied = true, edit_count = #edits }
+    `,
+      [{ bufnr: bufnr ?? -1, timeout: 2000 }],
+    ).then((r) => {
+      const res = r as { applied: boolean; edit_count: number };
+      return { applied: res.applied, editCount: res.edit_count };
+    }));
   }
 
   // --- Internal helpers ---------------------------------------------------
