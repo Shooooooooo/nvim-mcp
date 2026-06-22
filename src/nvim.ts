@@ -770,16 +770,18 @@ export class NvimController {
     let timedOut = false;
     const exitRe = /\[Process exited (-?\d+)\]/;
 
-    // Poll the buffer (non-blocking for Neovim) until the process-exit marker
-    // shows up. Polling avoids blocking the user's editor the way jobwait would.
+    // Poll the terminal's exit status, captured from termopen's on_exit in the
+    // runtime (see R.open_term). We deliberately do NOT scrape the visual
+    // "[Process exited N]" marker: a windowless terminal is never redrawn, so on
+    // some Neovim builds that line is never written into the buffer and a
+    // marker-based poll spins until it times out (exitCode stays null). Polling
+    // the status is non-blocking for the user's editor, unlike jobwait.
     while (true) {
-      const { lines } = await this.terminalRead(opened.bufnr, {
-        stripTrailingBlank: true,
-      });
-      const joined = lines.join("\n");
-      const m = exitRe.exec(joined);
-      if (m) {
-        exitCode = Number(m[1]);
+      const status = (await this.execLua(`return _G.__nvim_mcp.term_status(...)`, [
+        opened.bufnr,
+      ])) as { found: boolean; done: boolean; exit_code: number | null };
+      if (status.done) {
+        exitCode = status.exit_code;
         break;
       }
       if (Date.now() > deadline) {

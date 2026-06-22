@@ -21,7 +21,7 @@ export const RUNTIME_LUA = String.raw`
 local R = _G.__nvim_mcp or {}
 _G.__nvim_mcp = R
 
-R.terminals = R.terminals or {} -- bufnr -> { cmd, started_at, job }
+R.terminals = R.terminals or {} -- bufnr -> { cmd, started_at, job, done, exit_code }
 R.jobs = R.jobs or {}           -- id -> { cmd, lines, pending, exit_code, done, job_id }
 R.job_seq = R.job_seq or 0
 -- R.log_buf and R.panel_tab persist across calls when valid.
@@ -117,19 +117,32 @@ end
 function R.open_term(cmd, opts)
   opts = opts or {}
   local buf = vim.api.nvim_create_buf(true, false)
+  -- Register the terminal up front so the on_exit callback (which can fire
+  -- before termopen even returns for a very fast command) always has a record
+  -- to write its exit code into.
+  local rec = { cmd = opts.cmd_str or '', started_at = os.time(), job = nil, done = false, exit_code = nil }
+  R.terminals[buf] = rec
   local term_opts = vim.empty_dict()
   if opts.cwd and opts.cwd ~= '' then term_opts.cwd = opts.cwd end
+  -- Capture completion from the job's own exit event rather than the visual
+  -- "[Process exited N]" marker: a windowless terminal is never redrawn, so on
+  -- some Neovim builds that marker is never written into the buffer lines and a
+  -- poll that waits for it would spin until timeout.
+  term_opts.on_exit = function(_, code)
+    rec.exit_code = code
+    rec.done = true
+  end
   local job
   vim.api.nvim_buf_call(buf, function()
     job = vim.fn.termopen(cmd, term_opts)
   end)
+  rec.job = job
   if opts.name and opts.name ~= '' then
     pcall(vim.api.nvim_buf_set_name, buf, 'term://' .. opts.name)
   end
   if opts.listed == false then
     vim.bo[buf].buflisted = false
   end
-  R.terminals[buf] = { cmd = opts.cmd_str or '', started_at = os.time(), job = job }
   if opts.show == 'panel' then
     pcall(R.show_in_panel, buf)
   end
@@ -139,6 +152,15 @@ function R.open_term(cmd, opts)
     job_id = job,
     name = vim.api.nvim_buf_get_name(buf),
   }
+end
+
+-- Completion + exit code for a terminal we created, captured from termopen's
+-- on_exit (see R.open_term). Polled by runInTerminal instead of scraping the
+-- "[Process exited N]" buffer marker, which is unreliable for windowless terms.
+function R.term_status(buf)
+  local rec = R.terminals[buf]
+  if not rec then return { found = false } end
+  return { found = true, done = rec.done == true, exit_code = rec.exit_code }
 end
 
 -- Forget a terminal we created (used when a one-shot succeeds and is cleaned up).
