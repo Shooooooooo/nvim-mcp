@@ -21,7 +21,6 @@
   },
   "files": [
     "dist",
-    "nvim",
     "README.md"
   ],
   "scripts": {

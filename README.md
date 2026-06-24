@@ -95,29 +95,6 @@ That's it — the agent can now call the `nvim_*` tools and they act on the edit
 it's running inside. Ask it things like *"open a terminal and run the tests, then
 fix whatever fails."*
 
-### The `:ClaudeCode` command (optional)
-
-For a Cursor-like one-keystroke workflow, this repo ships a tiny Neovim plugin
-(in [`nvim/`](nvim/)) that opens the agent in a split for you. With
-[lazy.nvim](https://github.com/folke/lazy.nvim):
-
-```lua
-{
-  "shooooooooo/nvim-mcp",
-  config = function()
-    require("nvim-mcp").setup({
-      agent_cmd = { "claude" },  -- the agent to launch
-      split = "vertical",        -- "vertical" | "horizontal" | "tab" | "float"
-      size = 0.4,
-    })
-    vim.keymap.set("n", "<leader>cc", "<cmd>ClaudeCode<cr>", { desc = "Claude Code" })
-  end,
-}
-```
-
-`:ClaudeCode` opens (or focuses) a terminal split running the agent. Because the
-terminal inherits `$NVIM`, `nvim-mcp` connects straight back to the same editor.
-
 ## Tools
 
 | Tool | What it does |
