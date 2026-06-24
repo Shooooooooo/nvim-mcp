@@ -9,22 +9,12 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  NvimController,
-  resolveNvimAddress,
-  parseExecDisplay,
-  type ExecDisplay,
-} from "./nvim.js";
+import { NvimController, resolveNvimAddress } from "./nvim.js";
 import { buildServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 import { logger } from "./logger.js";
 
-function parseArgs(argv: string[]): {
-  socket?: string;
-  display?: ExecDisplay;
-  help: boolean;
-} {
+function parseArgs(argv: string[]): { socket?: string; help: boolean } {
   let socket: string | undefined;
-  let display: ExecDisplay | undefined;
   let help = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -34,15 +24,11 @@ function parseArgs(argv: string[]): {
       socket = arg.slice("--socket=".length);
     } else if (arg.startsWith("--address=")) {
       socket = arg.slice("--address=".length);
-    } else if (arg === "--display") {
-      display = parseExecDisplay(argv[++i]);
-    } else if (arg.startsWith("--display=")) {
-      display = parseExecDisplay(arg.slice("--display=".length));
     } else if (arg === "-h" || arg === "--help") {
       help = true;
     }
   }
-  return { socket, display, help };
+  return { socket, help };
 }
 
 const HELP = `${SERVER_NAME} ${SERVER_VERSION}
@@ -51,7 +37,7 @@ An MCP server that gives an agent full control over the Neovim session it lives
 inside: buffers, windows, diagnostics and terminals.
 
 Usage:
-  nvim-mcp [--socket <addr>] [--display panel|hidden|log]
+  nvim-mcp [--socket <addr>]
 
 The target Neovim is resolved in this order:
   1. --socket / --address <addr>
@@ -60,16 +46,10 @@ The target Neovim is resolved in this order:
   4. $NVIM_LISTEN_ADDRESS (legacy)
 
 <addr> is a unix socket path (or named pipe) or a host:port TCP address.
-
---display controls where the agent's command execution is shown inside Neovim:
-  panel   a terminal in a dedicated "Agent Terminals" tabpage (default)
-  hidden  a terminal with no window, surfaced on demand
-  log     output streamed into one shared "nvim-mcp://log" buffer
-It can also be set via $NVIM_MCP_EXEC_DISPLAY.
 `;
 
 async function main(): Promise<void> {
-  const { socket, display, help } = parseArgs(process.argv.slice(2));
+  const { socket, help } = parseArgs(process.argv.slice(2));
   if (help) {
     process.stdout.write(HELP);
     return;
@@ -87,12 +67,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const execDisplay = display ?? parseExecDisplay(process.env.NVIM_MCP_EXEC_DISPLAY);
-  if (execDisplay) {
-    logger.info(`Execution display mode: ${execDisplay}`);
-  }
-
-  const controller = new NvimController(socket, { display: execDisplay });
+  const controller = new NvimController(socket);
   const server = buildServer(controller);
   const transport = new StdioServerTransport();
 

@@ -94,18 +94,6 @@ describe("MCP server", () => {
     expect(text).toContain("exit code: 0");
   });
 
-  it("runs a command in 'log' display mode over the protocol", async () => {
-    const res = (await client.callTool({
-      name: "nvim_run_in_terminal",
-      arguments: { cmd: "echo logged-over-mcp", display: "log" },
-    })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
-
-    expect(res.isError).toBeFalsy();
-    const text = res.content.map((c) => c.text).join("\n");
-    expect(text).toContain("logged-over-mcp");
-    expect(text).toContain("exit code: 0");
-  });
-
   it("edits a buffer through MCP tools", async () => {
     await client.callTool({ name: "nvim_command", arguments: { command: "enew" } });
     const write = (await client.callTool({

@@ -4,8 +4,7 @@
   "description": "An MCP server that gives an agent (e.g. Claude Code) full control over the Neovim session it lives inside — buffers, windows, diagnostics, and terminals — turning Neovim into a Cursor-like agentic editor.",
   "type": "module",
   "bin": {
-    "nvim-mcp": "dist/index.js",
-    "nvim-mcp-hook": "dist/hook.js"
+    "nvim-mcp": "dist/index.js"
   },
   "main": "dist/index.js",
   "repository": {
