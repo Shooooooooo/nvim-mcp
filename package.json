@@ -8,6 +8,18 @@
     "nvim-mcp-hook": "dist/hook.js"
   },
   "main": "dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shooooooooo/nvim-mcp.git"
+  },
+  "homepage": "https://github.com/shooooooooo/nvim-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/shooooooooo/nvim-mcp/issues"
+  },
+  "author": "shooooooooo (https://github.com/shooooooooo)",
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist",
     "nvim",
@@ -19,7 +31,8 @@
     "dev": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
   },
   "engines": {
     "node": ">=18"

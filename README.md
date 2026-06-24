@@ -280,6 +280,22 @@ npm run build
 npm test
 ```
 
+## Releasing
+
+Publishing to npm is automated by
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which runs on
+any pushed `v*` tag (or manually from the Actions tab). One-time setup: add an
+`NPM_TOKEN` repository secret (an npm **automation** token with publish rights).
+Then cut a release:
+
+```bash
+npm version patch     # or minor / major — bumps package.json and tags it
+git push --follow-tags
+```
+
+The workflow typechecks, builds, and runs `npm publish --provenance`, so the
+published package always ships a fresh `dist/`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
