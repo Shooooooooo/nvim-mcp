@@ -10,6 +10,8 @@
  */
 
 let pending = Buffer.alloc(0);
+/** URI of the most recently opened document, used to anchor workspace symbols. */
+let lastDocUri = null;
 
 process.stdin.on("data", (chunk) => {
   pending = Buffer.concat([pending, chunk]);
@@ -56,10 +58,14 @@ function handle(msg) {
     case "initialize":
       reply(id, {
         capabilities: {
+          // Advertise open/close sync so the client sends textDocument/didOpen —
+          // that is how we learn a real document URI to anchor workspace symbols.
+          textDocumentSync: { openClose: true, change: 1 },
           hoverProvider: true,
           definitionProvider: true,
           referencesProvider: true,
           documentSymbolProvider: true,
+          workspaceSymbolProvider: true,
           renameProvider: true,
           codeActionProvider: true,
           documentFormattingProvider: true,
@@ -75,9 +81,14 @@ function handle(msg) {
       process.exit(0);
       return;
 
+    // Remember the open document so workspace/symbol can point back at a real
+    // file, then fall through to the accepted-notification handling below.
+    case "textDocument/didOpen":
+      if (params && params.textDocument) lastDocUri = params.textDocument.uri;
+      return;
+
     // Notifications we simply accept.
     case "initialized":
-    case "textDocument/didOpen":
     case "textDocument/didChange":
     case "textDocument/didClose":
     case "textDocument/didSave":
@@ -124,6 +135,24 @@ function handle(msg) {
           ],
         },
       ]);
+      return;
+
+    case "workspace/symbol":
+      // Return a single canned SymbolInformation anchored at the open document,
+      // regardless of the query, so the tool's plumbing is exercised offline.
+      reply(
+        id,
+        lastDocUri
+          ? [
+              {
+                name: "fakeSymbol",
+                kind: 12, // Function
+                location: { uri: lastDocUri, range: range(0, 0, 0, 10) },
+                containerName: "fakeModule",
+              },
+            ]
+          : [],
+      );
       return;
 
     case "textDocument/rename":

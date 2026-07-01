@@ -217,6 +217,37 @@ export function buildServer(nvim: NvimController): McpServer {
     guard(async ({ path, split }) => json(await nvim.openFile(path, { split }))),
   );
 
+  server.registerTool(
+    "nvim_save_buffer",
+    {
+      title: "Save buffer to disk",
+      description:
+        "Persist buffer edits to disk (nvim_write_buffer only changes the " +
+        "in-memory buffer). By default writes the target buffer to its own file; " +
+        "pass saveAs to write it to a new path and rename the buffer, or all=true " +
+        "to write every modified, named file buffer. Set force=true to override a " +
+        "read-only mark or a changed-on-disk warning.",
+      inputSchema: {
+        ...bufTarget,
+        saveAs: z
+          .string()
+          .optional()
+          .describe("Write to this path and rename the buffer to it (like :saveas)."),
+        all: z
+          .boolean()
+          .optional()
+          .describe("Write all modified, named file buffers. Ignores bufnr/path/saveAs."),
+        force: z
+          .boolean()
+          .optional()
+          .describe("Append `!` to force the write past warnings. Default false."),
+      },
+    },
+    guard(async ({ bufnr, path, saveAs, all, force }) =>
+      json(await nvim.saveBuffer({ bufnr, path }, { saveAs, all, force })),
+    ),
+  );
+
   // --- Windows & diagnostics ---------------------------------------------
 
   server.registerTool(
@@ -447,6 +478,27 @@ export function buildServer(nvim: NvimController): McpServer {
       },
     },
     guard(async ({ bufnr }) => json(await nvim.lspDocumentSymbols(bufnr))),
+  );
+
+  server.registerTool(
+    "nvim_lsp_workspace_symbols",
+    {
+      title: "LSP workspace symbols",
+      description:
+        "Search for symbols across the whole workspace by name via the language " +
+        "server (the project-wide counterpart to nvim_lsp_document_symbols). " +
+        "Returns each match's name, kind, file and 1-based position. Use this to " +
+        "locate a definition that isn't in the current buffer.",
+      inputSchema: {
+        query: z.string().describe("Symbol name (or substring) to search for."),
+        bufnr: z
+          .number()
+          .int()
+          .optional()
+          .describe("Buffer whose language servers to query. Omit for the current buffer."),
+      },
+    },
+    guard(async ({ query, bufnr }) => json(await nvim.lspWorkspaceSymbols(query, { bufnr }))),
   );
 
   server.registerTool(

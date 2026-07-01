@@ -98,6 +98,16 @@ describe("LSP read operations", () => {
     expect(syms[0].kind).toBe("Function");
     expect(syms[1].depth).toBe(1);
   });
+
+  it("searches workspace symbols across the project", async () => {
+    const syms = await ctl.lspWorkspaceSymbols("fake", { bufnr });
+    expect(syms.length).toBeGreaterThanOrEqual(1);
+    expect(syms[0].name).toBe("fakeSymbol");
+    expect(syms[0].kind).toBe("Function");
+    expect(syms[0].containerName).toBe("fakeModule");
+    expect(syms[0].filename).toContain("read.lua");
+    expect(syms[0].line).toBe(1); // 1-based; fake points at line 0
+  });
 });
 
 describe("LSP mutating operations", () => {

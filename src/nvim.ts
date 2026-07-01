@@ -60,6 +60,18 @@ export interface OpenTerminalResult {
   name: string;
 }
 
+export interface SavedBuffer {
+  bufnr: number;
+  name: string;
+  modified: boolean;
+  /** Present only when this buffer could not be written (e.g. in save-all mode). */
+  error?: string;
+}
+
+export interface SaveBufferResult {
+  saved: SavedBuffer[];
+}
+
 export interface RunInTerminalResult {
   bufnr: number;
   output: string;
@@ -114,6 +126,15 @@ export interface LspSymbol {
   detail?: string;
   line?: number;
   depth: number;
+}
+
+export interface LspWorkspaceSymbol {
+  name: string;
+  kind: string;
+  filename: string;
+  line?: number;
+  col?: number;
+  containerName?: string;
 }
 
 export interface LspHoverResult {
@@ -492,6 +513,89 @@ export class NvimController {
     `,
       [{ cmd: splitCmd, path }],
     )) as BufferInfo;
+  }
+
+  /**
+   * Persist buffer edits to disk — the counterpart to setBufferLines, which
+   * only changes the in-memory buffer. Modes:
+   *   - default: write the target buffer (by bufnr, path, or the current one) to
+   *     its own file;
+   *   - `saveAs`: write it to a new path and rename the buffer to match (like
+   *     `:saveas`);
+   *   - `all`: write every modified, named, normal-file buffer (like `:wall`).
+   * `force` adds the `!` bang so a write proceeds past a read-only mark or a
+   * changed-on-disk warning. An unnamed buffer with no `saveAs` is an error, as
+   * there is no path to write to.
+   */
+  async saveBuffer(
+    target: { bufnr?: number; path?: string } = {},
+    opts: { saveAs?: string; force?: boolean; all?: boolean } = {},
+  ): Promise<SaveBufferResult> {
+    return (await this.execLua(
+      `
+      local args = ...
+      local bang = args.force and '!' or ''
+
+      if args.all then
+        local saved = {}
+        for _, b in ipairs(vim.api.nvim_list_bufs()) do
+          if vim.api.nvim_buf_is_loaded(b)
+              and vim.bo[b].modified
+              and vim.bo[b].buftype == ''
+              and vim.api.nvim_buf_get_name(b) ~= '' then
+            local ok, err = pcall(function()
+              vim.api.nvim_buf_call(b, function() vim.cmd('write' .. bang) end)
+            end)
+            saved[#saved + 1] = {
+              bufnr = b,
+              name = vim.api.nvim_buf_get_name(b),
+              modified = vim.bo[b].modified,
+              error = (not ok) and tostring(err) or nil,
+            }
+          end
+        end
+        return { saved = saved }
+      end
+
+      local buf
+      if args.bufnr ~= nil and args.bufnr >= 0 then
+        buf = args.bufnr
+      elseif args.path ~= nil and args.path ~= '' then
+        buf = vim.fn.bufnr(args.path)
+        if buf == -1 then error('no buffer for path: ' .. args.path) end
+      else
+        buf = vim.api.nvim_get_current_buf()
+      end
+      if not vim.api.nvim_buf_is_loaded(buf) then vim.fn.bufload(buf) end
+
+      if args.save_as ~= '' then
+        vim.api.nvim_buf_call(buf, function()
+          vim.cmd('saveas' .. bang .. ' ' .. vim.fn.fnameescape(args.save_as))
+        end)
+      elseif vim.api.nvim_buf_get_name(buf) == '' then
+        error('buffer ' .. buf .. ' has no file name; pass saveAs to choose a path')
+      else
+        vim.api.nvim_buf_call(buf, function() vim.cmd('write' .. bang) end)
+      end
+
+      return {
+        saved = { {
+          bufnr = buf,
+          name = vim.api.nvim_buf_get_name(buf),
+          modified = vim.bo[buf].modified,
+        } },
+      }
+    `,
+      [
+        {
+          bufnr: target.bufnr ?? -1,
+          path: target.path ?? "",
+          save_as: opts.saveAs ?? "",
+          force: opts.force ?? false,
+          all: opts.all ?? false,
+        },
+      ],
+    )) as SaveBufferResult;
   }
 
   // --- Windows ------------------------------------------------------------
@@ -971,6 +1075,61 @@ export class NvimController {
       detail: s.detail,
       line: s.line,
       depth: s.depth,
+    }));
+  }
+
+  /**
+   * Search for symbols across the whole workspace (not just one buffer) via the
+   * language server's `workspace/symbol` request. This is how the agent finds a
+   * definition it can't see in the current file — the project-wide counterpart
+   * to lspDocumentSymbols. The request is routed through the clients attached to
+   * `bufnr` (or the current buffer).
+   */
+  async lspWorkspaceSymbols(
+    query: string,
+    opts: { bufnr?: number } = {},
+  ): Promise<LspWorkspaceSymbol[]> {
+    const raw = (await this.execLua(
+      `
+      local args = ...
+      local bufnr = (args.bufnr and args.bufnr >= 0) and args.bufnr or vim.api.nvim_get_current_buf()
+      local params = { query = args.query }
+      local responses = vim.lsp.buf_request_sync(bufnr, 'workspace/symbol', params, args.timeout)
+      local out = {}
+      for _, r in pairs(responses or {}) do
+        if r.error then error(vim.inspect(r.error)) end
+        for _, s in ipairs(r.result or {}) do
+          local loc = s.location
+          local uri = loc and loc.uri
+          local range = loc and loc.range
+          out[#out + 1] = {
+            name = s.name,
+            kind = s.kind,
+            filename = uri and vim.uri_to_fname(uri) or '',
+            line = range and (range.start.line + 1) or nil,
+            col = range and (range.start.character + 1) or nil,
+            container_name = s.containerName,
+          }
+        end
+      end
+      return out
+    `,
+      [{ bufnr: opts.bufnr ?? -1, query, timeout: 2000 }],
+    )) as Array<{
+      name: string;
+      kind: number;
+      filename: string;
+      line?: number;
+      col?: number;
+      container_name?: string;
+    }>;
+    return raw.map((s) => ({
+      name: s.name,
+      kind: SYMBOL_KIND_NAMES[s.kind] ?? String(s.kind),
+      filename: s.filename,
+      line: s.line,
+      col: s.col,
+      containerName: s.container_name,
     }));
   }
 

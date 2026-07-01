@@ -105,7 +105,8 @@ fix whatever fails."*
 | `nvim_eval` | Evaluate a Vimscript expression. |
 | `nvim_list_buffers` | List buffers (number, name, type, modified, line count). |
 | `nvim_read_buffer` | Read lines from a buffer by number, path, or current. |
-| `nvim_write_buffer` | Replace a line range in a buffer. |
+| `nvim_write_buffer` | Replace a line range in a buffer (in memory). |
+| `nvim_save_buffer` | Persist buffer edits to disk (save, save-as, or save-all). |
 | `nvim_open_file` | Open a file (optionally in a split or tab). |
 | `nvim_list_windows` | List windows with buffer, size, cursor. |
 | `nvim_diagnostics` | LSP/diagnostic entries for a buffer or all buffers. |
@@ -128,6 +129,7 @@ column**.
 | `nvim_lsp_definition` | Resolve definition location(s) of the symbol at a position. |
 | `nvim_lsp_references` | Find all references to the symbol at a position. |
 | `nvim_lsp_document_symbols` | List the symbols defined in a buffer (with kind and nesting depth). |
+| `nvim_lsp_workspace_symbols` | Search symbols by name across the whole project (with kind and location). |
 | `nvim_lsp_rename` | Rename a symbol project-wide; applies the edits (or previews with `apply=false`). |
 | `nvim_lsp_code_action` | List code actions (quick fixes/refactors) at a position; apply one by index. |
 | `nvim_lsp_format` | Format a buffer via its language server and apply the changes. |
@@ -144,6 +146,8 @@ By default the target is discovered from the environment, highest priority first
 `<addr>` may be a unix-socket path / named pipe, or a `host:port` TCP address
 (start Neovim with `nvim --listen 127.0.0.1:6789` for the latter).
 
+Run `nvim-mcp --help` for usage or `nvim-mcp --version` to print the version.
+
 ## Testing
 
 The test suite is real, not mocked: every integration test spins up an actual
@@ -156,15 +160,16 @@ npm test
 What's covered:
 
 - **`test/nvim.test.ts`** — the controller against a live Neovim: address
-  resolution, session info, Lua/eval/Ex commands, buffer read/write, windows,
-  diagnostics.
+  resolution, session info, Lua/eval/Ex commands, buffer read/write, saving
+  buffers to disk (save, save-as, save-all), windows, diagnostics.
 - **`test/terminal.test.ts`** — the headline scenario: open a terminal, run
   `echo hello world`, read it back; plus non-zero exit codes and interactive
   send/read.
 - **`test/lsp.test.ts`** — the LSP tools driven against a deterministic fake
   language server (`test/helpers/fake-lsp.mjs`), covering hover, definition,
-  references, document symbols, rename (apply + preview), code actions, and
-  formatting — all offline, no real language server or network required.
+  references, document symbols, workspace symbols, rename (apply + preview),
+  code actions, and formatting — all offline, no real language server or network
+  required.
 - **`test/mcp.test.ts`** — the full MCP stack: an MCP client launches the server
   as a subprocess with `NVIM` set, lists the tools, and calls
   `nvim_run_in_terminal` to run `echo hello world` end-to-end over JSON-RPC.

@@ -7,6 +7,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NvimController } from "../src/nvim.js";
 import { startHeadlessNvim, HeadlessNvim } from "./helpers/nvim.js";
 
@@ -85,5 +88,71 @@ describe("diagnostics", () => {
   it("returns an array (empty on a clean buffer)", async () => {
     const diags = await ctl.diagnostics();
     expect(Array.isArray(diags)).toBe(true);
+  });
+});
+
+describe("saving buffers", () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "nvim-mcp-save-"));
+    // Let :edit abandon an unwritten buffer so opening files never hits E37.
+    await ctl.execCommand("set hidden");
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("writes buffer edits to disk", async () => {
+    const file = join(dir, "note.txt");
+    await writeFile(file, "old\n", "utf8");
+    const buf = await ctl.openFile(file);
+
+    await ctl.setBufferLines({ bufnr: buf.bufnr }, ["new one", "new two"], 0, -1);
+    const res = await ctl.saveBuffer({ bufnr: buf.bufnr });
+
+    expect(res.saved).toHaveLength(1);
+    expect(res.saved[0].bufnr).toBe(buf.bufnr);
+    expect(res.saved[0].modified).toBe(false);
+    expect(await readFile(file, "utf8")).toBe("new one\nnew two\n");
+  });
+
+  it("saves a buffer under a new path with saveAs", async () => {
+    await ctl.execCommand("enew");
+    const cur = (await ctl.listBuffers()).find((b) => b.current)!;
+    await ctl.setBufferLines({ bufnr: cur.bufnr }, ["saved as content"], 0, -1);
+
+    const target = join(dir, "saved-as.txt");
+    const res = await ctl.saveBuffer({ bufnr: cur.bufnr }, { saveAs: target });
+
+    expect(res.saved[0].name).toContain("saved-as.txt");
+    expect(res.saved[0].modified).toBe(false);
+    expect(await readFile(target, "utf8")).toBe("saved as content\n");
+  });
+
+  it("writes every modified file buffer with all=true", async () => {
+    const a = join(dir, "all-a.txt");
+    const b = join(dir, "all-b.txt");
+    await writeFile(a, "a0\n", "utf8");
+    await writeFile(b, "b0\n", "utf8");
+    const bufA = await ctl.openFile(a);
+    const bufB = await ctl.openFile(b);
+    await ctl.setBufferLines({ bufnr: bufA.bufnr }, ["a1"], 0, -1);
+    await ctl.setBufferLines({ bufnr: bufB.bufnr }, ["b1"], 0, -1);
+
+    const res = await ctl.saveBuffer({}, { all: true });
+    const savedNames = res.saved.map((s) => s.name);
+    expect(savedNames.some((n) => n.includes("all-a.txt"))).toBe(true);
+    expect(savedNames.some((n) => n.includes("all-b.txt"))).toBe(true);
+    expect(res.saved.every((s) => s.modified === false)).toBe(true);
+    expect(await readFile(a, "utf8")).toBe("a1\n");
+    expect(await readFile(b, "utf8")).toBe("b1\n");
+  });
+
+  it("errors when saving an unnamed buffer without saveAs", async () => {
+    await ctl.execCommand("enew");
+    const cur = (await ctl.listBuffers()).find((b) => b.current)!;
+    await expect(ctl.saveBuffer({ bufnr: cur.bufnr })).rejects.toThrow(/no file name/);
   });
 });

@@ -13,9 +13,10 @@ import { NvimController, resolveNvimAddress } from "./nvim.js";
 import { buildServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 import { logger } from "./logger.js";
 
-function parseArgs(argv: string[]): { socket?: string; help: boolean } {
+function parseArgs(argv: string[]): { socket?: string; help: boolean; version: boolean } {
   let socket: string | undefined;
   let help = false;
+  let version = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--socket" || arg === "--address") {
@@ -26,9 +27,11 @@ function parseArgs(argv: string[]): { socket?: string; help: boolean } {
       socket = arg.slice("--address=".length);
     } else if (arg === "-h" || arg === "--help") {
       help = true;
+    } else if (arg === "-v" || arg === "--version") {
+      version = true;
     }
   }
-  return { socket, help };
+  return { socket, help, version };
 }
 
 const HELP = `${SERVER_NAME} ${SERVER_VERSION}
@@ -38,6 +41,8 @@ inside: buffers, windows, diagnostics and terminals.
 
 Usage:
   nvim-mcp [--socket <addr>]
+  nvim-mcp --version
+  nvim-mcp --help
 
 The target Neovim is resolved in this order:
   1. --socket / --address <addr>
@@ -49,7 +54,11 @@ The target Neovim is resolved in this order:
 `;
 
 async function main(): Promise<void> {
-  const { socket, help } = parseArgs(process.argv.slice(2));
+  const { socket, help, version } = parseArgs(process.argv.slice(2));
+  if (version) {
+    process.stdout.write(`${SERVER_NAME} ${SERVER_VERSION}\n`);
+    return;
+  }
   if (help) {
     process.stdout.write(HELP);
     return;

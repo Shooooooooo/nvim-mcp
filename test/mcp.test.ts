@@ -11,7 +11,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { startHeadlessNvim, HeadlessNvim } from "./helpers/nvim.js";
@@ -55,9 +57,11 @@ describe("MCP server", () => {
     expect(names).toContain("nvim_open_terminal");
     expect(names).toContain("nvim_terminal_read");
     expect(names).toContain("nvim_read_buffer");
+    expect(names).toContain("nvim_save_buffer");
     expect(names).toContain("nvim_lsp_definition");
     expect(names).toContain("nvim_lsp_hover");
     expect(names).toContain("nvim_lsp_code_action");
+    expect(names).toContain("nvim_lsp_workspace_symbols");
   });
 
   it("exposes LSP tools over the protocol (no client attached -> empty)", async () => {
@@ -110,5 +114,28 @@ describe("MCP server", () => {
     expect(text).toContain("one");
     expect(text).toContain("two");
     expect(text).toContain("three");
+  });
+
+  it("saves a buffer to disk through nvim_save_buffer", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "nvim-mcp-mcp-save-"));
+    try {
+      const target = join(dir, "written.txt");
+      await client.callTool({ name: "nvim_command", arguments: { command: "enew!" } });
+      await client.callTool({
+        name: "nvim_write_buffer",
+        arguments: { lines: ["persisted line"], start: 0, end: -1 },
+      });
+
+      const save = (await client.callTool({
+        name: "nvim_save_buffer",
+        arguments: { saveAs: target },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+      expect(save.isError).toBeFalsy();
+      expect(JSON.parse(save.content[0].text).saved[0].modified).toBe(false);
+
+      expect(await readFile(target, "utf8")).toBe("persisted line\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
   });
 });
